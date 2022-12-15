@@ -3,7 +3,6 @@
 //
 // It is only suitable for use as a 'private' cache (i.e. for a web-browser or an API-client
 // and not for a shared proxy).
-//
 package httpcache
 
 import (
@@ -49,8 +48,8 @@ func cacheKey(req *http.Request) string {
 
 // CachedResponse returns the cached http.Response for req if present, and nil
 // otherwise.
-func CachedResponse(c Cache, req *http.Request) (resp *http.Response, err error) {
-	cachedVal, ok := c.Get(cacheKey(req))
+func CachedResponse(c Cache, key string, req *http.Request) (resp *http.Response, err error) {
+	cachedVal, ok := c.Get(key)
 	if !ok {
 		return
 	}
@@ -103,6 +102,8 @@ type Transport struct {
 	Cache     Cache
 	// If true, responses returned from the cache will be given an extra header, X-From-Cache
 	MarkCachedResponses bool
+	// return http cache key from request
+	CacheKey func(*http.Request) string
 }
 
 // NewTransport returns a new Transport with the
@@ -128,6 +129,13 @@ func varyMatches(cachedResp *http.Response, req *http.Request) bool {
 	return true
 }
 
+func (t *Transport) cacheKey(req *http.Request) string {
+	if t.CacheKey != nil {
+		return t.CacheKey(req)
+	}
+	return cacheKey(req)
+}
+
 // RoundTrip takes a Request and returns a Response
 //
 // If there is a fresh Response already in cache, then it will be returned without connecting to
@@ -137,11 +145,11 @@ func varyMatches(cachedResp *http.Response, req *http.Request) bool {
 // to give the server a chance to respond with NotModified. If this happens, then the cached Response
 // will be returned.
 func (t *Transport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
-	cacheKey := cacheKey(req)
-	cacheable := (req.Method == "GET" || req.Method == "HEAD") && req.Header.Get("range") == ""
+	cacheKey := t.cacheKey(req)
+	cacheable := (req.Method == "GET" || req.Method == "HEAD") && req.Header.Get("range") == "" && cacheKey != ""
 	var cachedResp *http.Response
 	if cacheable {
-		cachedResp, err = CachedResponse(t.Cache, req)
+		cachedResp, err = CachedResponse(t.Cache, cacheKey, req)
 	} else {
 		// Need to invalidate an existing value
 		t.Cache.Delete(cacheKey)
@@ -307,7 +315,8 @@ func getFreshness(respHeaders, reqHeaders http.Header) (freshness int) {
 	}
 	currentAge := clock.since(date)
 
-	var lifetime time.Duration
+	// default cache lifetime is 1 month
+	var lifetime = time.Hour * 24 * 30
 	var zeroDuration time.Duration
 
 	// If a response includes both an Expires header and a max-age directive,
